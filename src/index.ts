@@ -89,7 +89,7 @@ server.tool(
 
 server.tool(
   "scaffold_server",
-  "Generate a complete, runnable TypeScript MCP server project. Creates: package.json, tsconfig, tsup config, src/index.ts with tool registrations, tool modules with TODO stubs, tests, and README. Supports optional license SDK for paid servers.",
+  "Generate a complete, runnable TypeScript MCP server project. Creates: package.json, tsconfig, tsup config, src/index.ts with tool registrations, tool modules with TODO stubs, tests, and README. Supports optional license SDK for paid servers. Use hosting='remote' to generate a Streamable HTTP server with Dockerfile for cloud deployment.",
   {
     package_name: z.string().describe("npm package name (e.g. 'my-weather-mcp')"),
     description: z.string().describe("Short description of what the server does"),
@@ -97,10 +97,11 @@ server.tool(
     output_dir: z.string().optional().describe("Parent directory for the project (default: current directory)"),
     env_vars: z.string().optional().describe('JSON array of env vars: [{"name": "API_KEY", "description": "...", "required": true}]'),
     paid: z.boolean().optional().describe("Include @mcp_marketplace/license SDK for paid servers"),
+    hosting: z.string().optional().describe("'local' (default, stdio) or 'remote' (Streamable HTTP for cloud deployment with Dockerfile)"),
   },
-  async ({ package_name, description, tools, output_dir, env_vars, paid }) => {
+  async ({ package_name, description, tools, output_dir, env_vars, paid, hosting }) => {
     try {
-      const result = await scaffoldServer(package_name, description, tools, output_dir, env_vars, paid);
+      const result = await scaffoldServer(package_name, description, tools, output_dir, env_vars, paid, hosting);
       return { content: [{ type: "text", text: result }] };
     } catch (e) {
       return { content: [{ type: "text", text: JSON.stringify({ error: (e as Error).message }) }] };

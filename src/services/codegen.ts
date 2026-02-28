@@ -67,7 +67,7 @@ function tsType(type: string): string {
 export function renderPackageJson(
   packageName: string,
   description: string,
-  opts: { paid?: boolean } = {}
+  opts: { paid?: boolean; hosting?: string } = {}
 ): string {
   const deps: Record<string, string> = {
     "@modelcontextprotocol/sdk": "^1.27.0",
@@ -76,13 +76,22 @@ export function renderPackageJson(
   if (opts.paid) {
     deps["@mcp_marketplace/license"] = "^1.1.0";
   }
+  if (opts.hosting === "remote") {
+    deps["express"] = "^5.2.0";
+  }
 
-  const pkg = {
+  const devDeps: Record<string, string> = {
+    "@types/node": "^22.0.0",
+    tsup: "^8.0.0",
+    typescript: "^5.5.0",
+    vitest: "^2.0.0",
+  };
+
+  const pkg: Record<string, unknown> = {
     name: packageName,
     version: "1.0.0",
     description,
     type: "module",
-    bin: { [packageName]: "dist/index.js" },
     main: "./dist/index.js",
     types: "./dist/index.d.ts",
     scripts: {
@@ -92,17 +101,17 @@ export function renderPackageJson(
       prepublishOnly: "npm run build",
     },
     dependencies: deps,
-    devDependencies: {
-      "@types/node": "^22.0.0",
-      tsup: "^8.0.0",
-      typescript: "^5.5.0",
-      vitest: "^2.0.0",
-    },
+    devDependencies: devDeps,
     files: ["dist"],
     keywords: ["mcp", packageName, "ai-tools"],
     license: "MIT",
     engines: { node: ">=18" },
   };
+
+  // Local servers get a bin entry for CLI usage; remote servers are started via node
+  if (opts.hosting !== "remote") {
+    pkg.bin = { [packageName]: "dist/index.js" };
+  }
 
   return JSON.stringify(pkg, null, 2) + "\n";
 }
@@ -127,7 +136,10 @@ export function renderTsconfig(): string {
   return JSON.stringify(cfg, null, 2) + "\n";
 }
 
-export function renderTsupConfig(): string {
+export function renderTsupConfig(opts: { hosting?: string } = {}): string {
+  const bannerLine = opts.hosting === "remote"
+    ? ""
+    : `\n  banner: { js: "#!/usr/bin/env node" },`;
   return `import { defineConfig } from "tsup";
 
 export default defineConfig({
@@ -136,8 +148,7 @@ export default defineConfig({
   target: "node18",
   outDir: "dist",
   clean: true,
-  dts: true,
-  banner: { js: "#!/usr/bin/env node" },
+  dts: true,${bannerLine}
 });
 `;
 }
@@ -154,6 +165,17 @@ dist/
 // --- Server (index.ts) ---
 
 export function renderIndex(
+  packageName: string,
+  tools: ToolDef[],
+  opts: { paid?: boolean; paidTools?: string[]; hosting?: string } = {}
+): string {
+  if (opts.hosting === "remote") {
+    return renderRemoteIndex(packageName, tools, opts);
+  }
+  return renderLocalIndex(packageName, tools, opts);
+}
+
+function renderLocalIndex(
   packageName: string,
   tools: ToolDef[],
   opts: { paid?: boolean; paidTools?: string[] } = {}
@@ -194,40 +216,7 @@ export function renderIndex(
   lines.push(`// --- TOOLS ---`);
   lines.push(``);
 
-  for (const tool of tools) {
-    const fnName = snakeToCamel(tool.name);
-
-    // Build zod schema object
-    const schemaEntries: string[] = [];
-    for (const p of tool.parameters) {
-      let zodStr = zodType(p.type);
-      if (!p.required) zodStr += ".optional()";
-      zodStr += `.describe("${p.description.replace(/"/g, '\\"')}")`;
-      schemaEntries.push(`    ${p.name}: ${zodStr},`);
-    }
-
-    // Build destructured params
-    const paramNames = tool.parameters.map(p => p.name).join(", ");
-
-    lines.push(`server.tool(`);
-    lines.push(`  "${tool.name}",`);
-    lines.push(`  "${tool.description.replace(/"/g, '\\"')}",`);
-    lines.push(`  {`);
-    for (const entry of schemaEntries) {
-      lines.push(entry);
-    }
-    lines.push(`  },`);
-    lines.push(`  async ({ ${paramNames} }) => {`);
-    lines.push(`    try {`);
-    lines.push(`      const result = await ${fnName}(${paramNames});`);
-    lines.push(`      return { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }] };`);
-    lines.push(`    } catch (e) {`);
-    lines.push(`      return { content: [{ type: "text", text: JSON.stringify({ error: (e as Error).message }) }] };`);
-    lines.push(`    }`);
-    lines.push(`  }`);
-    lines.push(`);`);
-    lines.push(``);
-  }
+  renderToolRegistrations(lines, tools);
 
   lines.push(`// --- END TOOLS ---`);
   lines.push(``);
@@ -241,6 +230,182 @@ export function renderIndex(
   lines.push(`await server.connect(transport);`);
 
   return lines.join("\n") + "\n";
+}
+
+function renderRemoteIndex(
+  packageName: string,
+  tools: ToolDef[],
+  opts: { paid?: boolean; paidTools?: string[] } = {}
+): string {
+  const lines: string[] = [];
+
+  lines.push(`/**`);
+  lines.push(` * ${packageName} — Remote MCP server (Streamable HTTP).`);
+  lines.push(` */`);
+  lines.push(``);
+  lines.push(`import express from "express";`);
+  lines.push(`import { randomUUID } from "node:crypto";`);
+  lines.push(`import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";`);
+  lines.push(`import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";`);
+  lines.push(`import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";`);
+
+  if (opts.paid) {
+    lines.push(`import { withLicense } from "@mcp_marketplace/license";`);
+  }
+
+  lines.push(`import { z } from "zod";`);
+  lines.push(``);
+
+  // Tool imports
+  lines.push(`// --- IMPORTS ---`);
+  for (const tool of tools) {
+    const fnName = snakeToCamel(tool.name);
+    const fileName = tool.name.replace(/_/g, "-");
+    lines.push(`import { ${fnName} } from "./tools/${fileName}.js";`);
+  }
+  lines.push(`// --- END IMPORTS ---`);
+  lines.push(``);
+
+  // Server factory function — each session gets its own McpServer instance
+  lines.push(`function createServer(): McpServer {`);
+  lines.push(`  const server = new McpServer({`);
+  lines.push(`    name: "${packageName}",`);
+  lines.push(`    version: "1.0.0",`);
+  lines.push(`  });`);
+  lines.push(``);
+
+  lines.push(`  // --- TOOLS ---`);
+  lines.push(``);
+
+  renderToolRegistrations(lines, tools, "  ");
+
+  lines.push(`  // --- END TOOLS ---`);
+  lines.push(``);
+
+  if (opts.paid) {
+    lines.push(`  withLicense(server, { slug: "${packageName}" });`);
+    lines.push(``);
+  }
+
+  lines.push(`  return server;`);
+  lines.push(`}`);
+  lines.push(``);
+
+  // Express app + Streamable HTTP transport
+  lines.push(`const app = express();`);
+  lines.push(`app.use(express.json());`);
+  lines.push(``);
+  lines.push(`const transports: Record<string, StreamableHTTPServerTransport> = {};`);
+  lines.push(``);
+
+  // POST handler
+  lines.push(`app.post("/mcp", async (req, res) => {`);
+  lines.push(`  const sessionId = req.headers["mcp-session-id"] as string | undefined;`);
+  lines.push(``);
+  lines.push(`  if (sessionId && transports[sessionId]) {`);
+  lines.push(`    await transports[sessionId].handleRequest(req, res, req.body);`);
+  lines.push(`    return;`);
+  lines.push(`  }`);
+  lines.push(``);
+  lines.push(`  if (!sessionId && isInitializeRequest(req.body)) {`);
+  lines.push(`    const transport = new StreamableHTTPServerTransport({`);
+  lines.push(`      sessionIdGenerator: () => randomUUID(),`);
+  lines.push(`      onsessioninitialized: (id: string) => { transports[id] = transport; },`);
+  lines.push(`    });`);
+  lines.push(`    transport.onclose = () => {`);
+  lines.push(`      if (transport.sessionId) delete transports[transport.sessionId];`);
+  lines.push(`    };`);
+  lines.push(`    const server = createServer();`);
+  lines.push(`    await server.connect(transport);`);
+  lines.push(`    await transport.handleRequest(req, res, req.body);`);
+  lines.push(`    return;`);
+  lines.push(`  }`);
+  lines.push(``);
+  lines.push(`  res.status(400).json({`);
+  lines.push(`    jsonrpc: "2.0",`);
+  lines.push(`    error: { code: -32000, message: "Bad Request: No valid session ID" },`);
+  lines.push(`    id: null,`);
+  lines.push(`  });`);
+  lines.push(`});`);
+  lines.push(``);
+
+  // GET handler
+  lines.push(`app.get("/mcp", async (req, res) => {`);
+  lines.push(`  const sessionId = req.headers["mcp-session-id"] as string | undefined;`);
+  lines.push(`  if (!sessionId || !transports[sessionId]) {`);
+  lines.push(`    res.status(400).send("Invalid or missing session ID");`);
+  lines.push(`    return;`);
+  lines.push(`  }`);
+  lines.push(`  await transports[sessionId].handleRequest(req, res);`);
+  lines.push(`});`);
+  lines.push(``);
+
+  // DELETE handler
+  lines.push(`app.delete("/mcp", async (req, res) => {`);
+  lines.push(`  const sessionId = req.headers["mcp-session-id"] as string | undefined;`);
+  lines.push(`  if (!sessionId || !transports[sessionId]) {`);
+  lines.push(`    res.status(400).send("Invalid or missing session ID");`);
+  lines.push(`    return;`);
+  lines.push(`  }`);
+  lines.push(`  await transports[sessionId].handleRequest(req, res);`);
+  lines.push(`});`);
+  lines.push(``);
+
+  // Start server
+  lines.push(`const port = parseInt(process.env.PORT || "8000");`);
+  lines.push(`app.listen(port, "0.0.0.0", () => {`);
+  lines.push(`  console.log(\`MCP server running on http://0.0.0.0:\${port}/mcp\`);`);
+  lines.push(`});`);
+  lines.push(``);
+
+  // Graceful shutdown
+  lines.push(`process.on("SIGINT", async () => {`);
+  lines.push(`  for (const id of Object.keys(transports)) {`);
+  lines.push(`    await transports[id].close();`);
+  lines.push(`    delete transports[id];`);
+  lines.push(`  }`);
+  lines.push(`  process.exit(0);`);
+  lines.push(`});`);
+
+  return lines.join("\n") + "\n";
+}
+
+/** Render tool registrations (shared between local and remote). */
+function renderToolRegistrations(lines: string[], tools: ToolDef[], indent: string = ""): void {
+  for (const tool of tools) {
+    const fnName = snakeToCamel(tool.name);
+
+    // Build zod schema object
+    const schemaEntries: string[] = [];
+    for (const p of tool.parameters) {
+      let zodStr = zodType(p.type);
+      if (!p.required) zodStr += ".optional()";
+      zodStr += `.describe("${p.description.replace(/"/g, '\\"')}")`;
+      schemaEntries.push(`${indent}    ${p.name}: ${zodStr},`);
+    }
+
+    // Build destructured params
+    const paramNames = tool.parameters.map(p => p.name).join(", ");
+
+    lines.push(`${indent}server.tool(`);
+    lines.push(`${indent}  "${tool.name}",`);
+    lines.push(`${indent}  "${tool.description.replace(/"/g, '\\"')}",`);
+    lines.push(`${indent}  {`);
+    for (const entry of schemaEntries) {
+      lines.push(entry);
+    }
+    lines.push(`${indent}  },`);
+    lines.push(`${indent}  async ({ ${paramNames} }) => {`);
+    lines.push(`${indent}    try {`);
+    lines.push(`${indent}      const result = await ${fnName}(${paramNames});`);
+    lines.push(`${indent}      return { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }] };`);
+    lines.push(`${indent}    } catch (e) {`);
+    lines.push(`${indent}      return { content: [{ type: "text", text: JSON.stringify({ error: (e as Error).message }) }] };`);
+    lines.push(`${indent}    }`);
+    lines.push(`${indent}  }`);
+    lines.push(`${indent});`);
+    lines.push(``);
+  }
 }
 
 // --- Tool Module ---
@@ -325,7 +490,7 @@ export function renderReadme(
   packageName: string,
   description: string,
   tools: ToolDef[],
-  opts: { paid?: boolean } = {}
+  opts: { paid?: boolean; hosting?: string } = {}
 ): string {
   const lines: string[] = [];
 
@@ -342,23 +507,58 @@ export function renderReadme(
     lines.push(``);
   }
 
-  lines.push(`## Installation`);
-  lines.push(``);
-  lines.push("```json");
-  const config: Record<string, unknown> = {
-    mcpServers: {
-      [packageName]: {
-        command: "npx",
-        args: ["-y", packageName],
-        ...(opts.paid
-          ? { env: { MCP_LICENSE_KEY: "your-license-key-here" } }
-          : {}),
+  if (opts.hosting === "remote") {
+    // Remote: show URL-based config and deployment instructions
+    lines.push(`## Usage`);
+    lines.push(``);
+    lines.push(`Add to your MCP client config:`);
+    lines.push(``);
+    lines.push("```json");
+    const remoteConfig: Record<string, unknown> = {
+      mcpServers: {
+        [packageName]: {
+          url: `https://your-server.com/mcp`,
+          ...(opts.paid
+            ? { headers: { Authorization: "Bearer mcp_live_your_key_here" } }
+            : {}),
+        },
       },
-    },
-  };
-  lines.push(JSON.stringify(config, null, 2));
-  lines.push("```");
-  lines.push(``);
+    };
+    lines.push(JSON.stringify(remoteConfig, null, 2));
+    lines.push("```");
+    lines.push(``);
+
+    lines.push(`## Deployment`);
+    lines.push(``);
+    lines.push("```bash");
+    lines.push(`docker build -t ${packageName} .`);
+    lines.push(`docker run -p 8000:8000 ${packageName}`);
+    lines.push("```");
+    lines.push(``);
+    lines.push(`Then point your MCP client at \`http://localhost:8000/mcp\` to test.`);
+    lines.push(``);
+    lines.push(`Deploy the Docker container to Railway, Fly.io, AWS, or any cloud provider.`);
+    lines.push(``);
+  } else {
+    // Local: show npx-based config
+    lines.push(`## Installation`);
+    lines.push(``);
+    lines.push("```json");
+    const config: Record<string, unknown> = {
+      mcpServers: {
+        [packageName]: {
+          command: "npx",
+          args: ["-y", packageName],
+          ...(opts.paid
+            ? { env: { MCP_LICENSE_KEY: "your-license-key-here" } }
+            : {}),
+        },
+      },
+    };
+    lines.push(JSON.stringify(config, null, 2));
+    lines.push("```");
+    lines.push(``);
+  }
 
   lines.push(`## Tools`);
   lines.push(``);
@@ -385,13 +585,19 @@ export function renderReadme(
 
 export function renderEnvExample(
   envVars?: Array<{ name: string; description: string; required?: boolean }>,
-  opts: { paid?: boolean } = {}
+  opts: { paid?: boolean; hosting?: string } = {}
 ): string | null {
   const lines: string[] = [];
 
   if (opts.paid) {
     lines.push(`# Required: License key from MCP Marketplace`);
     lines.push(`MCP_LICENSE_KEY=`);
+    lines.push(``);
+  }
+
+  if (opts.hosting === "remote") {
+    lines.push(`# Server port (optional, default 8000)`);
+    lines.push(`PORT=8000`);
     lines.push(``);
   }
 
@@ -440,6 +646,26 @@ ${opts.features}
 ${opts.tags}
 
 ${opts.docsUrl ? `## Documentation URL\n${opts.docsUrl}\n` : ""}`;
+}
+
+// --- Dockerfile (remote hosting) ---
+
+export function renderDockerfile(packageName: string): string {
+  return `FROM node:18-slim
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+COPY . .
+RUN npm run build
+
+ENV PORT=8000
+EXPOSE \${PORT}
+
+CMD ["node", "dist/index.js"]
+`;
 }
 
 // --- Add Tool (sentinel injection content) ---

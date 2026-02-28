@@ -15,6 +15,7 @@ import {
   renderTestTool,
   renderReadme,
   renderEnvExample,
+  renderDockerfile,
   type ToolDef,
 } from "../services/codegen.js";
 import { writeProjectFiles } from "../services/file-writer.js";
@@ -25,7 +26,8 @@ export async function scaffoldServer(
   tools: string,
   outputDir: string = ".",
   envVars?: string,
-  paid?: boolean
+  paid?: boolean,
+  hosting: string = "local"
 ): Promise<string> {
   // Parse tool definitions
   let toolDefs: ToolDef[];
@@ -54,13 +56,13 @@ export async function scaffoldServer(
   const files: Record<string, string> = {};
 
   // Project config
-  files["package.json"] = renderPackageJson(packageName, description, { paid: !!paid });
+  files["package.json"] = renderPackageJson(packageName, description, { paid: !!paid, hosting });
   files["tsconfig.json"] = renderTsconfig();
-  files["tsup.config.ts"] = renderTsupConfig();
+  files["tsup.config.ts"] = renderTsupConfig({ hosting });
   files[".gitignore"] = renderGitignore();
 
   // Main server
-  files["src/index.ts"] = renderIndex(packageName, toolDefs, { paid: !!paid });
+  files["src/index.ts"] = renderIndex(packageName, toolDefs, { paid: !!paid, hosting });
 
   // Tool modules
   for (const tool of toolDefs) {
@@ -76,12 +78,17 @@ export async function scaffoldServer(
   }
 
   // README
-  files["README.md"] = renderReadme(packageName, description, toolDefs, { paid: !!paid });
+  files["README.md"] = renderReadme(packageName, description, toolDefs, { paid: !!paid, hosting });
 
   // .env.example
-  const envExample = renderEnvExample(envVarsParsed, { paid: !!paid });
+  const envExample = renderEnvExample(envVarsParsed, { paid: !!paid, hosting });
   if (envExample) {
     files[".env.example"] = envExample;
+  }
+
+  // Dockerfile (remote hosting only)
+  if (hosting === "remote") {
+    files["Dockerfile"] = renderDockerfile(packageName);
   }
 
   // Write to disk
@@ -93,8 +100,19 @@ export async function scaffoldServer(
     "Open the src/tools/ folder and replace the TODO stubs with your real logic.",
     "npm run build",
     "npm test",
-    "When ready, use build_package to build and publish_package to publish to npm.",
   ];
+
+  if (hosting === "remote") {
+    nextSteps.push("docker build -t " + packageName + " . && docker run -p 8000:8000 " + packageName);
+    nextSteps.push("Test by pointing your MCP client at http://localhost:8000/mcp");
+    nextSteps.push("Deploy to Railway, Fly.io, AWS, or any cloud provider.");
+  } else {
+    nextSteps.push("When ready, use build_package to build and publish_package to publish to npm.");
+  }
+
+  if (paid) {
+    nextSteps.push("License gating is enabled. Users need MCP_LICENSE_KEY to use paid tools.");
+  }
 
   return JSON.stringify({
     success: true,
@@ -102,6 +120,7 @@ export async function scaffoldServer(
     filesCreated: written.length,
     fileList: Object.keys(files),
     paid: !!paid,
+    hosting,
     nextSteps,
   }, null, 2);
 }
