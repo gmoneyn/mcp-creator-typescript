@@ -1,6 +1,6 @@
 {
   "name": "mcp-creator-typescript",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Scaffold, build, and publish TypeScript MCP servers to npm. The TypeScript companion to mcp-creator-python.",
   "type": "module",
   "bin": {

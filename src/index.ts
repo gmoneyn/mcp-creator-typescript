@@ -179,7 +179,7 @@ server.tool(
 
 server.tool(
   "generate_launchguide",
-  "Generate a LAUNCHGUIDE.md file for submitting your MCP server to the MCP Marketplace. Includes tagline, description, features, category, and tags.",
+  "Generate a LAUNCHGUIDE.md file for submitting your MCP server to the MCP Marketplace. Includes tagline, description, use cases, features, getting started, category, and tags.",
   {
     project_dir: z.string().describe("Path to the project directory"),
     package_name: z.string().describe("npm package name"),
@@ -190,10 +190,12 @@ server.tool(
     tags: z.string().describe("Comma-separated tags (max 30)"),
     setup_requirements: z.string().optional().describe("Setup requirements (env vars, API keys, etc.)"),
     docs_url: z.string().optional().describe("URL to documentation"),
+    use_cases: z.string().optional().describe("Comma-separated use cases (e.g. 'Testing, Prototyping, CI/CD'). Max 30."),
+    getting_started: z.string().optional().describe("Example prompts and tool descriptions (one per line)"),
   },
-  async ({ project_dir, package_name, tagline, description, category, features, tags, setup_requirements, docs_url }) => {
+  async ({ project_dir, package_name, tagline, description, category, features, tags, setup_requirements, docs_url, use_cases, getting_started }) => {
     try {
-      const result = await generateLaunchguide(project_dir, package_name, tagline, description, category, features, tags, setup_requirements, docs_url);
+      const result = await generateLaunchguide(project_dir, package_name, tagline, description, category, features, tags, setup_requirements, docs_url, use_cases, getting_started);
       return { content: [{ type: "text", text: result }] };
     } catch (e) {
       return { content: [{ type: "text", text: JSON.stringify({ error: (e as Error).message }) }] };

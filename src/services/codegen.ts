@@ -624,6 +624,8 @@ export function renderLaunchguide(opts: {
   tags: string;
   setupRequirements?: string;
   docsUrl?: string;
+  useCases?: string;
+  gettingStarted?: string;
 }): string {
   return `# ${opts.packageName}
 
@@ -639,8 +641,14 @@ ${opts.setupRequirements ?? "No environment variables required."}
 ## Category
 ${opts.category}
 
+## Use Cases
+${opts.useCases ?? ""}
+
 ## Features
 ${opts.features}
+
+## Getting Started
+${opts.gettingStarted ?? ""}
 
 ## Tags
 ${opts.tags}

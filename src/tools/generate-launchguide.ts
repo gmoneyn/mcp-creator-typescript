@@ -16,7 +16,9 @@ export async function generateLaunchguide(
   features: string,
   tags: string,
   setupRequirements?: string,
-  docsUrl?: string
+  docsUrl?: string,
+  useCases?: string,
+  gettingStarted?: string
 ): Promise<string> {
   const absDir = resolve(projectDir);
   const filePath = join(absDir, "LAUNCHGUIDE.md");
@@ -30,6 +32,8 @@ export async function generateLaunchguide(
     tags,
     setupRequirements,
     docsUrl,
+    useCases,
+    gettingStarted,
   });
 
   mkdirSync(dirname(filePath), { recursive: true });
