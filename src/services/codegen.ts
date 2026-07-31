@@ -70,21 +70,30 @@ export function renderPackageJson(
   opts: { paid?: boolean; hosting?: string } = {}
 ): string {
   const deps: Record<string, string> = {
-    "@modelcontextprotocol/sdk": "^1.27.0",
-    zod: "^3.23.0",
+    // MCP 2026-07-28 (stateless core). NOTE: v2 is a PACKAGE RENAME, not a version
+    // bump — "@modelcontextprotocol/sdk" is the pre-stateless v1 line.
+    "@modelcontextprotocol/server": "^2.0.0",
+    zod: "^4.0.0",
   };
   if (opts.paid) {
     deps["@mcp_marketplace/license"] = "^1.1.0";
   }
   if (opts.hosting === "remote") {
+    deps["@modelcontextprotocol/express"] = "^2.0.0";
+    deps["@modelcontextprotocol/node"] = "^2.0.0";
     deps["express"] = "^5.2.0";
   }
+  // express ships no types of its own; without this the mount handler's
+  // (req, res) params are implicit-any and the generated project fails strict tsc.
+  const extraDev: Record<string, string> =
+    opts.hosting === "remote" ? { "@types/express": "^5.0.0" } : {};
 
   const devDeps: Record<string, string> = {
     "@types/node": "^22.0.0",
     tsup: "^8.0.0",
     typescript: "^5.5.0",
     vitest: "^2.0.0",
+    ...extraDev,
   };
 
   const pkg: Record<string, unknown> = {
@@ -105,7 +114,7 @@ export function renderPackageJson(
     files: ["dist"],
     keywords: ["mcp", packageName, "ai-tools"],
     license: "MIT",
-    engines: { node: ">=18" },
+    engines: { node: ">=20" },
   };
 
   // Local servers get a bin entry for CLI usage; remote servers are started via node
@@ -145,7 +154,7 @@ export function renderTsupConfig(opts: { hosting?: string } = {}): string {
 export default defineConfig({
   entry: ["src/index.ts"],
   format: ["esm"],
-  target: "node18",
+  target: "node20",
   outDir: "dist",
   clean: true,
   dts: true,${bannerLine}
@@ -186,8 +195,8 @@ function renderLocalIndex(
   lines.push(` * ${packageName} — MCP server.`);
   lines.push(` */`);
   lines.push(``);
-  lines.push(`import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";`);
-  lines.push(`import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";`);
+  lines.push(`import { McpServer } from "@modelcontextprotocol/server";`);
+  lines.push(`import { serveStdio } from "@modelcontextprotocol/server/stdio";`);
 
   if (opts.paid) {
     lines.push(`import { withLicense } from "@mcp_marketplace/license";`);
@@ -206,68 +215,10 @@ function renderLocalIndex(
   lines.push(`// --- END IMPORTS ---`);
   lines.push(``);
 
-  lines.push(`const server = new McpServer({`);
-  lines.push(`  name: "${packageName}",`);
-  lines.push(`  version: "1.0.0",`);
-  lines.push(`});`);
-  lines.push(``);
-
-  // Tool registrations
-  lines.push(`// --- TOOLS ---`);
-  lines.push(``);
-
-  renderToolRegistrations(lines, tools);
-
-  lines.push(`// --- END TOOLS ---`);
-  lines.push(``);
-
-  if (opts.paid) {
-    lines.push(`withLicense(server, { slug: "${packageName}" });`);
-    lines.push(``);
-  }
-
-  lines.push(`const transport = new StdioServerTransport();`);
-  lines.push(`await server.connect(transport);`);
-
-  return lines.join("\n") + "\n";
-}
-
-function renderRemoteIndex(
-  packageName: string,
-  tools: ToolDef[],
-  opts: { paid?: boolean; paidTools?: string[] } = {}
-): string {
-  const lines: string[] = [];
-
-  lines.push(`/**`);
-  lines.push(` * ${packageName} — Remote MCP server (Streamable HTTP).`);
-  lines.push(` */`);
-  lines.push(``);
-  lines.push(`import express from "express";`);
-  lines.push(`import { randomUUID } from "node:crypto";`);
-  lines.push(`import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";`);
-  lines.push(`import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";`);
-  lines.push(`import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";`);
-
-  if (opts.paid) {
-    lines.push(`import { withLicense } from "@mcp_marketplace/license";`);
-  }
-
-  lines.push(`import { z } from "zod";`);
-  lines.push(``);
-
-  // Tool imports
-  lines.push(`// --- IMPORTS ---`);
-  for (const tool of tools) {
-    const fnName = snakeToCamel(tool.name);
-    const fileName = tool.name.replace(/_/g, "-");
-    lines.push(`import { ${fnName} } from "./tools/${fileName}.js";`);
-  }
-  lines.push(`// --- END IMPORTS ---`);
-  lines.push(``);
-
-  // Server factory function — each session gets its own McpServer instance
-  lines.push(`function createServer(): McpServer {`);
+  // MCP 2026-07-28: serveStdio owns the connection and takes a FACTORY. One
+  // instance is pinned per connection; the same factory also serves 2025-era
+  // clients, so the two eras can never drift apart.
+  lines.push(`serveStdio(() => {`);
   lines.push(`  const server = new McpServer({`);
   lines.push(`    name: "${packageName}",`);
   lines.push(`    version: "1.0.0",`);
@@ -288,83 +239,104 @@ function renderRemoteIndex(
   }
 
   lines.push(`  return server;`);
-  lines.push(`}`);
+  lines.push(`});`);
+
+  return lines.join("\n") + "\n";
+}
+
+function renderRemoteIndex(
+  packageName: string,
+  tools: ToolDef[],
+  opts: { paid?: boolean; paidTools?: string[] } = {}
+): string {
+  const lines: string[] = [];
+
+  lines.push(`/**`);
+  lines.push(` * ${packageName} — Remote MCP server (Streamable HTTP).`);
+  lines.push(` */`);
+  lines.push(``);
+  lines.push(`import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";`);
+  lines.push(`import { toNodeHandler } from "@modelcontextprotocol/node";`);
+  lines.push(`import { createMcpExpressApp } from "@modelcontextprotocol/express";`);
+
+  if (opts.paid) {
+    lines.push(`import { withLicense } from "@mcp_marketplace/license";`);
+  }
+
+  lines.push(`import { z } from "zod";`);
   lines.push(``);
 
-  // Express app + Streamable HTTP transport
-  lines.push(`const app = express();`);
-  lines.push(`app.use(express.json());`);
-  lines.push(``);
-  lines.push(`const transports: Record<string, StreamableHTTPServerTransport> = {};`);
+  // Tool imports
+  lines.push(`// --- IMPORTS ---`);
+  for (const tool of tools) {
+    const fnName = snakeToCamel(tool.name);
+    const fileName = tool.name.replace(/_/g, "-");
+    lines.push(`import { ${fnName} } from "./tools/${fileName}.js";`);
+  }
+  lines.push(`// --- END IMPORTS ---`);
   lines.push(``);
 
-  // POST handler
-  lines.push(`app.post("/mcp", async (req, res) => {`);
-  lines.push(`  const sessionId = req.headers["mcp-session-id"] as string | undefined;`);
-  lines.push(``);
-  lines.push(`  if (sessionId && transports[sessionId]) {`);
-  lines.push(`    await transports[sessionId].handleRequest(req, res, req.body);`);
-  lines.push(`    return;`);
-  lines.push(`  }`);
-  lines.push(``);
-  lines.push(`  if (!sessionId && isInitializeRequest(req.body)) {`);
-  lines.push(`    const transport = new StreamableHTTPServerTransport({`);
-  lines.push(`      sessionIdGenerator: () => randomUUID(),`);
-  lines.push(`      onsessioninitialized: (id: string) => { transports[id] = transport; },`);
-  lines.push(`    });`);
-  lines.push(`    transport.onclose = () => {`);
-  lines.push(`      if (transport.sessionId) delete transports[transport.sessionId];`);
-  lines.push(`    };`);
-  lines.push(`    const server = createServer();`);
-  lines.push(`    await server.connect(transport);`);
-  lines.push(`    await transport.handleRequest(req, res, req.body);`);
-  lines.push(`    return;`);
-  lines.push(`  }`);
-  lines.push(``);
-  lines.push(`  res.status(400).json({`);
-  lines.push(`    jsonrpc: "2.0",`);
-  lines.push(`    error: { code: -32000, message: "Bad Request: No valid session ID" },`);
-  lines.push(`    id: null,`);
+  // MCP 2026-07-28: no sessions. createMcpHandler takes a factory and serves
+  // each request independently; the same factory backs the stateless legacy
+  // fallback, so the modern and 2025-era paths cannot drift apart.
+  lines.push(`const handler = createMcpHandler(() => {`);
+  lines.push(`  const server = new McpServer({`);
+  lines.push(`    name: "${packageName}",`);
+  lines.push(`    version: "1.0.0",`);
   lines.push(`  });`);
+  lines.push(``);
+
+  lines.push(`  // --- TOOLS ---`);
+  lines.push(``);
+
+  renderToolRegistrations(lines, tools, "  ");
+
+  lines.push(`  // --- END TOOLS ---`);
+  lines.push(``);
+
+  if (opts.paid) {
+    lines.push(`  withLicense(server, { slug: "${packageName}" });`);
+    lines.push(``);
+  }
+
+  lines.push(`  return server;`);
   lines.push(`});`);
   lines.push(``);
 
-  // GET handler
-  lines.push(`app.get("/mcp", async (req, res) => {`);
-  lines.push(`  const sessionId = req.headers["mcp-session-id"] as string | undefined;`);
-  lines.push(`  if (!sessionId || !transports[sessionId]) {`);
-  lines.push(`    res.status(400).send("Invalid or missing session ID");`);
-  lines.push(`    return;`);
-  lines.push(`  }`);
-  lines.push(`  await transports[sessionId].handleRequest(req, res);`);
-  lines.push(`});`);
+  // Express app. NOTE: createMcpExpressApp only auto-applies DNS-rebinding /
+  // Host-header protection for LOCALHOST hosts. Binding 0.0.0.0 (required for
+  // container/hosted deploys) DISABLES it, so we require an explicit allowlist
+  // and warn loudly when it is absent rather than claiming protection we lost.
+  lines.push(`const allowedHosts = (process.env.MCP_ALLOWED_HOSTS ?? "")`);
+  lines.push(`  .split(",").map((s) => s.trim()).filter(Boolean);`);
+  lines.push(`if (allowedHosts.length === 0) {`);
+  lines.push(`  // FAIL CLOSED — a warning does not protect anything. Binding 0.0.0.0 turns off`);
+  lines.push(`  // the automatic localhost Host/Origin allowlist, so an unset MCP_ALLOWED_HOSTS`);
+  lines.push(`  // means publicly bound with no validation.`);
+  lines.push(`  console.error(`);
+  lines.push(`    "[mcp] REFUSING TO START: binding 0.0.0.0 requires MCP_ALLOWED_HOSTS " +`);
+  lines.push(`    "(comma-separated Host values), otherwise Host/Origin validation is disabled " +`);
+  lines.push(`    "and the server is exposed to DNS-rebinding. Example: MCP_ALLOWED_HOSTS=my.host,localhost"`);
+  lines.push(`  );`);
+  lines.push(`  process.exit(1);`);
+  lines.push(`}`);
+  // No session map, no GET stream endpoint, no DELETE teardown — 2026-07-28
+  // removed protocol sessions (SEP-2567), so a single mount serves everything.
+  lines.push(`const app = createMcpExpressApp({ host: "0.0.0.0", allowedHosts });`);
+  lines.push(`const nodeHandler = toNodeHandler(handler);`);
   lines.push(``);
-
-  // DELETE handler
-  lines.push(`app.delete("/mcp", async (req, res) => {`);
-  lines.push(`  const sessionId = req.headers["mcp-session-id"] as string | undefined;`);
-  lines.push(`  if (!sessionId || !transports[sessionId]) {`);
-  lines.push(`    res.status(400).send("Invalid or missing session ID");`);
-  lines.push(`    return;`);
-  lines.push(`  }`);
-  lines.push(`  await transports[sessionId].handleRequest(req, res);`);
-  lines.push(`});`);
+  lines.push(`// createMcpExpressApp installs express.json(), so by the time we run the`);
+  lines.push(`// request stream is ALREADY DRAINED. toNodeHandler takes the parsed body as`);
+  lines.push(`// its 3rd arg — and it deliberately IGNORES a function there (Express's`);
+  lines.push(`// \`next\`), so mounting toNodeHandler(handler) directly yields an empty body`);
+  lines.push(`// on every request. Forward req.body explicitly.`);
+  lines.push(`app.all("/mcp", (req, res) => nodeHandler(req, res, req.body));`);
   lines.push(``);
 
   // Start server
   lines.push(`const port = parseInt(process.env.PORT || "8000");`);
   lines.push(`app.listen(port, "0.0.0.0", () => {`);
   lines.push(`  console.log(\`MCP server running on http://0.0.0.0:\${port}/mcp\`);`);
-  lines.push(`});`);
-  lines.push(``);
-
-  // Graceful shutdown
-  lines.push(`process.on("SIGINT", async () => {`);
-  lines.push(`  for (const id of Object.keys(transports)) {`);
-  lines.push(`    await transports[id].close();`);
-  lines.push(`    delete transports[id];`);
-  lines.push(`  }`);
-  lines.push(`  process.exit(0);`);
   lines.push(`});`);
 
   return lines.join("\n") + "\n";
@@ -381,26 +353,30 @@ function renderToolRegistrations(lines: string[], tools: ToolDef[], indent: stri
       let zodStr = zodType(p.type);
       if (!p.required) zodStr += ".optional()";
       zodStr += `.describe("${p.description.replace(/"/g, '\\"')}")`;
-      schemaEntries.push(`${indent}    ${p.name}: ${zodStr},`);
+      schemaEntries.push(`${indent}      ${p.name}: ${zodStr},`);
     }
 
     // Build destructured params
     const paramNames = tool.parameters.map(p => p.name).join(", ");
 
-    lines.push(`${indent}server.tool(`);
+    // MCP 2026-07-28 / SDK v2: registerTool(name, config, cb). The v1
+    // server.tool(name, description, shape, cb) signature is gone.
+    lines.push(`${indent}server.registerTool(`);
     lines.push(`${indent}  "${tool.name}",`);
-    lines.push(`${indent}  "${tool.description.replace(/"/g, '\\"')}",`);
     lines.push(`${indent}  {`);
+    lines.push(`${indent}    description: "${tool.description.replace(/"/g, '\\"')}",`);
+    lines.push(`${indent}    inputSchema: z.object({`);
     for (const entry of schemaEntries) {
       lines.push(entry);
     }
+    lines.push(`${indent}    }),`);
     lines.push(`${indent}  },`);
     lines.push(`${indent}  async ({ ${paramNames} }) => {`);
     lines.push(`${indent}    try {`);
     lines.push(`${indent}      const result = await ${fnName}(${paramNames});`);
     lines.push(`${indent}      return { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }] };`);
     lines.push(`${indent}    } catch (e) {`);
-    lines.push(`${indent}      return { content: [{ type: "text", text: JSON.stringify({ error: (e as Error).message }) }] };`);
+    lines.push(`${indent}      return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) }] };`);
     lines.push(`${indent}    }`);
     lines.push(`${indent}  }`);
     lines.push(`${indent});`);
@@ -659,15 +635,21 @@ ${opts.docsUrl ? `## Documentation URL\n${opts.docsUrl}\n` : ""}`;
 // --- Dockerfile (remote hosting) ---
 
 export function renderDockerfile(packageName: string): string {
-  return `FROM node:18-slim
-
+  return `# Build stage — needs devDependencies (tsup lives there).
+FROM node:20-slim AS build
 WORKDIR /app
-
 COPY package*.json ./
-RUN npm ci --omit=dev
-
+RUN npm ci
 COPY . .
 RUN npm run build
+
+# Runtime stage — production deps only.
+FROM node:20-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY --from=build /app/dist ./dist
 
 ENV PORT=8000
 EXPOSE \${PORT}
@@ -691,26 +673,28 @@ export function renderAddToolRegistration(tool: ToolDef): string {
     let zodStr = zodType(p.type);
     if (!p.required) zodStr += ".optional()";
     zodStr += `.describe("${p.description.replace(/"/g, '\\"')}")`;
-    schemaEntries.push(`    ${p.name}: ${zodStr},`);
+    schemaEntries.push(`      ${p.name}: ${zodStr},`);
   }
   const paramNames = tool.parameters.map(p => p.name).join(", ");
 
   const lines: string[] = [];
   lines.push(``);
-  lines.push(`server.tool(`);
+  lines.push(`server.registerTool(`);
   lines.push(`  "${tool.name}",`);
-  lines.push(`  "${tool.description.replace(/"/g, '\\"')}",`);
   lines.push(`  {`);
+  lines.push(`    description: "${tool.description.replace(/"/g, '\\"')}",`);
+  lines.push(`    inputSchema: z.object({`);
   for (const entry of schemaEntries) {
     lines.push(entry);
   }
+  lines.push(`    }),`);
   lines.push(`  },`);
   lines.push(`  async ({ ${paramNames} }) => {`);
   lines.push(`    try {`);
   lines.push(`      const result = await ${fnName}(${paramNames});`);
   lines.push(`      return { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }] };`);
   lines.push(`    } catch (e) {`);
-  lines.push(`      return { content: [{ type: "text", text: JSON.stringify({ error: (e as Error).message }) }] };`);
+  lines.push(`      return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }) }] };`);
   lines.push(`    }`);
   lines.push(`  }`);
   lines.push(`);`);
