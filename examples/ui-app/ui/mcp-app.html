@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Defence in depth on top of the host CSP: no network of any kind. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'"
+    />
+    <title>Harvest</title>
+  </head>
+  <body>
+    <main id="root" class="main">
+      <h1 class="title">Harvest <span class="muted">(fixture data)</span></h1>
+      <!-- novalidate: the SERVER is the validator (zod on filter_harvest); the
+           browser must not pre-empt that, so out-of-range input reaches it and
+           the rejection is shown to the user. -->
+      <form id="filter-form" class="controls" novalidate>
+        <label>Category
+          <select id="category">
+            <option value="all">all</option>
+            <option value="fruit">fruit</option>
+            <option value="vegetable">vegetable</option>
+            <option value="grain">grain</option>
+          </select>
+        </label>
+        <label>Min crates
+          <input id="min-crates" type="number" min="0" max="10000" step="1" value="0" />
+        </label>
+        <button id="apply" type="submit">Apply filter</button>
+      </form>
+      <p id="status" class="muted" role="status">Waiting for tool result…</p>
+      <div id="chart" class="chart" aria-label="Crates by crop"></div>
+      <table id="table" class="table">
+        <thead><tr><th>Crop</th><th>Category</th><th class="num">Crates</th></tr></thead>
+        <tbody id="rows"></tbody>
+        <tfoot><tr><td colspan="2">Total</td><td id="total" class="num"></td></tr></tfoot>
+      </table>
+    </main>
+    <script type="module" src="./mcp-app.ts"></script>
+  </body>
+</html>

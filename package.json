@@ -1,0 +1,48 @@
+{
+  "name": "mcp-creator-typescript",
+  "version": "1.3.0",
+  "description": "Scaffold, build, and publish TypeScript MCP servers to npm. The TypeScript companion to mcp-creator-python.",
+  "type": "module",
+  "bin": {
+    "mcp-creator-typescript": "dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "mcp",
+    "mcp-creator",
+    "scaffold",
+    "typescript",
+    "cli",
+    "npm",
+    "ai-tools",
+    "model-context-protocol"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gmoneyn/mcp-creator-typescript"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
